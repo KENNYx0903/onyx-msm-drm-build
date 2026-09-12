@@ -13,20 +13,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git repo bc bison build-essential flex libssl-dev \
-            libelf-dev python3 rsync zip unzip curl
+            libelf-dev python3 rsync zip unzip curl jq
 
-      - name: Clone kernel sources
+      - name: Prepare workspace
         run: |
-          mkdir -p kernel_platform
-          cd kernel_platform
+          mkdir -p kernel_platform/vendor/qcom/opensource
 
-          git clone --depth=1 https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735.git msm-kernel
-          git clone --depth=1 https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735-modules.git modules
-          git clone --depth=1 https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735-devicetrees.git devicetrees
-
-      - name: Patch AOD DSI wakelock
+      - name: Clone kernel
         run: |
-          FILE="kernel_platform/modules/qcom/opensource/display-drivers/msm/dsi/dsi_display.c"
+          git clone --depth=1 \
+            https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735.git \
+            kernel_platform/msm-kernel
+
+      - name: Clone kernel modules
+        run: |
+          git clone --depth=1 \
+            https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735-modules.git \
+            kernel_platform/vendor/qcom/opensource/modules-src
+
+      - name: Clone devicetrees
+        run: |
+          git clone --depth=1 \
+            https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735-devicetrees.git \
+            kernel_platform/vendor/qcom/opensource/devicetrees
+
+      - name: Place external modules in expected layout
+        run: |
+          cp -a kernel_platform/vendor/qcom/opensource/modules-src/qcom/opensource/. \
+            kernel_platform/vendor/qcom/opensource/
+
+      - name: Patch DSI AOD wakelock
+        run: |
+          FILE="kernel_platform/vendor/qcom/opensource/display-drivers/msm/dsi/dsi_display.c"
+
+          test -f "$FILE"
+
+          COUNT=$(grep -Fxc $'\t\t\tpm_stay_awake(&display->pdev->dev);' "$FILE" || true)
+
+          echo "Exact occurrences: $COUNT"
 
           grep -n "pm_stay_awake(&display->pdev->dev);" "$FILE"
 
@@ -34,14 +58,76 @@ jobs:
             's/pm_stay_awake(&display->pdev->dev);/\/\* TEST: allow suspend in LP1 \*\/ \/\* pm_stay_awake(\&display->pdev->dev); \*\//' \
             "$FILE"
 
-          git -C kernel_platform/modules diff -- \
-            qcom/opensource/display-drivers/msm/dsi/dsi_display.c
+          grep -n -B3 -A3 "TEST: allow suspend in LP1" "$FILE"
 
-      - name: Show workspace
+      - name: Get Android kernel build tools
         run: |
-          find kernel_platform -maxdepth 2 -type d | sort | head -100
+          cd kernel_platform
 
-      - name: Stop here for first test
+          git clone --depth=1 \
+            https://android.googlesource.com/kernel/build \
+            build
+
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            prebuilts/clang/host/linux-x86
+
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/build-tools \
+            prebuilts/build-tools
+
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/kernel-build-tools \
+            prebuilts/kernel-build-tools
+
+      - name: Show build targets
         run: |
-          echo "Sources cloned and patch applied successfully."
-          echo "Next step will add the exact Kleaf build environment for msm_drm.ko."
+          cd kernel_platform
+
+          if [ -x tools/bazel ]; then
+            ./tools/bazel query \
+              "//vendor/qcom/opensource/display-drivers:*sun_perf*msm_drm*" || true
+          elif [ -x build/kernel/kleaf/bazel.py ]; then
+            python3 build/kernel/kleaf/bazel.py query \
+              "//vendor/qcom/opensource/display-drivers:*sun_perf*msm_drm*" || true
+          else
+            echo "No Kleaf bazel launcher found"
+            find build -maxdepth 4 -iname '*bazel*' | head -100
+          fi
+
+      - name: Build msm_drm
+        run: |
+          cd kernel_platform
+
+          TARGET="//vendor/qcom/opensource/display-drivers:sun_perf_msm_drm"
+
+          if [ -x tools/bazel ]; then
+            ./tools/bazel build "$TARGET"
+          elif [ -x build/kernel/kleaf/bazel.py ]; then
+            python3 build/kernel/kleaf/bazel.py build "$TARGET"
+          else
+            echo "Kleaf bazel launcher not found"
+            exit 1
+          fi
+
+      - name: Find msm_drm.ko
+        run: |
+          cd kernel_platform
+
+          find . -type f -name msm_drm.ko -print
+
+          KO=$(find . -type f -name msm_drm.ko | head -1)
+
+          if [ -z "$KO" ]; then
+            echo "msm_drm.ko was not produced"
+            exit 1
+          fi
+
+          mkdir -p ../artifact
+          cp "$KO" ../artifact/msm_drm.ko
+
+      - name: Upload msm_drm.ko
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-msm-drm-aod-suspend-test
+          path: artifact/msm_drm.ko
