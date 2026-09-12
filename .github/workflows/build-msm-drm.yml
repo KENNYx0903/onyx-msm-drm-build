@@ -1,0 +1,47 @@
+name: Build msm_drm for POCO F7
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git repo bc bison build-essential flex libssl-dev \
+            libelf-dev python3 rsync zip unzip curl
+
+      - name: Clone kernel sources
+        run: |
+          mkdir -p kernel_platform
+          cd kernel_platform
+
+          git clone --depth=1 https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735.git msm-kernel
+          git clone --depth=1 https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735-modules.git modules
+          git clone --depth=1 https://github.com/crdroidandroid/android_kernel_xiaomi_sm8735-devicetrees.git devicetrees
+
+      - name: Patch AOD DSI wakelock
+        run: |
+          FILE="kernel_platform/modules/qcom/opensource/display-drivers/msm/dsi/dsi_display.c"
+
+          grep -n "pm_stay_awake(&display->pdev->dev);" "$FILE"
+
+          sed -i \
+            's/pm_stay_awake(&display->pdev->dev);/\/\* TEST: allow suspend in LP1 \*\/ \/\* pm_stay_awake(\&display->pdev->dev); \*\//' \
+            "$FILE"
+
+          git -C kernel_platform/modules diff -- \
+            qcom/opensource/display-drivers/msm/dsi/dsi_display.c
+
+      - name: Show workspace
+        run: |
+          find kernel_platform -maxdepth 2 -type d | sort | head -100
+
+      - name: Stop here for first test
+        run: |
+          echo "Sources cloned and patch applied successfully."
+          echo "Next step will add the exact Kleaf build environment for msm_drm.ko."
