@@ -76,9 +76,6 @@ jobs:
             https://android.googlesource.com/platform/prebuilts/build-tools \
             prebuilts/build-tools
 
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/kernel-build-tools \
-            prebuilts/kernel-build-tools
 
       - name: Show build targets
         run: |
